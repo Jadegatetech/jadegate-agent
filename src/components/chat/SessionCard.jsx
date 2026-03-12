@@ -24,7 +24,7 @@ export default function SessionCard({ session }) {
 
   return (
     <button
-      onClick={() => navigate(`/sessions/${_id}`)}
+      onClick={() => navigate(`/sessions/${_id}`, { state: { session } })}
       className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-jade-800/50 active:bg-jade-800 transition-colors text-left"
     >
       <div className="relative flex-shrink-0">

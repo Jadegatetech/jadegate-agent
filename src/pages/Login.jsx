@@ -49,7 +49,15 @@ export default function Login() {
     setLoading(true)
     try {
       const res = await loginRequest(email, password)
-      const { accessToken, user } = res.data.data
+
+      // Backend returns: { success, data: <userObject>, token, refreshToken }
+      const user = res.data?.data
+      const accessToken = res.data?.token
+
+      if (!accessToken || !user) {
+        toast.error('Unexpected response from server. Please try again.')
+        return
+      }
 
       if (user.role !== 'agent') {
         toast.error('This portal is for agents only')
@@ -62,6 +70,7 @@ export default function Login() {
       const msg =
         err.response?.data?.message ||
         err.response?.data?.error ||
+        err.message ||
         'Login failed. Please try again.'
       toast.error(msg)
     } finally {

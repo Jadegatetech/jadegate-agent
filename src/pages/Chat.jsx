@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { io } from 'socket.io-client'
 import toast from 'react-hot-toast'
 import { getMessages, closeSession, reopenSession, uploadImage } from '../api/chat'
@@ -35,11 +35,15 @@ function MessageSkeleton() {
 export default function Chat() {
   const { id: sessionId } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const { user, token } = useAuth()
 
+  // Session data passed from the sessions list via navigation state
+  const navSession = location.state?.session
+
   const [messages, setMessages] = useState([])
-  const [sessionInfo, setSessionInfo] = useState(null)
-  const [status, setStatus] = useState('open')
+  const [sessionInfo, setSessionInfo] = useState(navSession || null)
+  const [status, setStatus] = useState(navSession?.status || 'open')
   const [loading, setLoading] = useState(true)
   const [closingLoading, setClosingLoading] = useState(false)
   const [uploadingImage, setUploadingImage] = useState(false)
@@ -61,13 +65,6 @@ export default function Chat() {
         if (cancelled) return
         const data = res.data?.data || res.data?.messages || res.data || []
         setMessages(Array.isArray(data) ? data : [])
-
-        // Try to get session info from message context
-        if (data.length > 0 && data[0].session) {
-          const s = data[0].session
-          setStatus(s.status || 'open')
-          setSessionInfo(s)
-        }
       })
       .catch(() => {
         if (!cancelled) toast.error('Failed to load messages')
@@ -195,7 +192,7 @@ export default function Chat() {
     }
   }
 
-  // Derive session user info from messages
+  // Prefer session info from navigation state (has profilePicture), fall back to message sender
   const sessionUser = sessionInfo?.user || messages.find((m) => m.sender?._id !== user?._id)?.sender
   const sessionUserName = sessionUser?.fullName || sessionUser?.username || 'User'
 
