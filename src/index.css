@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@theme {
+  --color-jade-50: #FEFCF7;
+  --color-jade-100: #B5FFE9;
+  --color-jade-400: #27EAAF;
+  --color-jade-500: #00C187;
+  --color-jade-700: #43888E;
+  --color-jade-800: #193133;
+  --color-jade-900: #062022;
+  --color-jade-warm: #EAD5D1;
+  --font-sans: 'Manrope', system-ui, -apple-system, sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #062022;
+  color: #FEFCF7;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  margin: 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    #193133 25%,
+    #1e3d40 50%,
+    #193133 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 0.5rem;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(67, 136, 142, 0.2);
+  border-radius: 2px;
+}
