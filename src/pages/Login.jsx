@@ -59,11 +59,6 @@ export default function Login() {
         return
       }
 
-      if (user.role !== 'agent') {
-        toast.error('This portal is for agents only')
-        return
-      }
-
       login(user, accessToken)
       navigate('/sessions', { replace: true })
     } catch (err) {
