@@ -1,9 +1,20 @@
+import { useState, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { getAgents } from '../api/agents'
+import toast from 'react-hot-toast'
+import { getAgents, updateProfilePicture } from '../api/agents'
 import { useAuth } from '../context/AuthContext'
 import Avatar from '../components/ui/Avatar'
 import Badge from '../components/ui/Badge'
 import { SkeletonBlock } from '../components/ui/Skeleton'
+
+function CameraIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+      <circle cx="12" cy="13" r="4" />
+    </svg>
+  )
+}
 
 function ProfileSkeleton() {
   return (
@@ -73,6 +84,9 @@ function BioIcon() {
 
 export default function Profile() {
   const { user } = useAuth()
+  const fileRef = useRef(null)
+  const [uploading, setUploading] = useState(false)
+  const [localPicture, setLocalPicture] = useState(null)
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['agent-profile', user?._id],
@@ -95,11 +109,28 @@ export default function Profile() {
     )
   }
 
+  const handlePictureChange = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploading(true)
+    try {
+      const res = await updateProfilePicture(file)
+      const newUrl = res.data?.data?.profilePicture
+      if (newUrl) setLocalPicture(newUrl)
+      toast.success('Profile picture updated')
+    } catch {
+      toast.error('Failed to update profile picture')
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
+
   const profile = data
   const displayName = profile?.user?.fullName || user?.fullName || 'Agent'
   const username = profile?.user?.username || user?.username
   const email = profile?.user?.email || user?.email
-  const profilePicture = profile?.profilePicture || profile?.user?.profilePicture
+  const profilePicture = localPicture || profile?.profilePicture || profile?.user?.profilePicture
   const location = profile?.location
   const bio = profile?.bio
   const expertise = profile?.expertise || []
@@ -110,7 +141,35 @@ export default function Profile() {
       {/* Header */}
       <div className="flex flex-col items-center text-center mb-6">
         <div className="relative mb-3">
-          <Avatar src={profilePicture} name={displayName} size="xl" />
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+            className="relative block rounded-full focus:outline-none group"
+            aria-label="Change profile picture"
+          >
+            <Avatar src={profilePicture} name={displayName} size="xl" />
+            {/* Camera overlay */}
+            <div className="absolute inset-0 rounded-full bg-jade-900/60 flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity">
+              {uploading ? (
+                <span className="size-5 rounded-full border-2 border-jade-400 border-t-transparent animate-spin" />
+              ) : (
+                <span className="text-jade-400"><CameraIcon /></span>
+              )}
+            </div>
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            className="hidden"
+            onChange={handlePictureChange}
+          />
+          {/* Upload indicator always visible while uploading */}
+          {uploading && (
+            <div className="absolute inset-0 rounded-full bg-jade-900/70 flex items-center justify-center">
+              <span className="size-5 rounded-full border-2 border-jade-400 border-t-transparent animate-spin" />
+            </div>
+          )}
           {isVerified && (
             <div className="absolute bottom-0 right-0 size-7 bg-jade-400 rounded-full flex items-center justify-center border-2 border-jade-900">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#062022" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
@@ -128,6 +187,7 @@ export default function Profile() {
         {username && (
           <p className="text-sm text-jade-700 mb-1">@{username}</p>
         )}
+        <p className="text-[11px] text-jade-700/40 mt-1">Tap photo to update</p>
       </div>
 
       {/* Info card */}

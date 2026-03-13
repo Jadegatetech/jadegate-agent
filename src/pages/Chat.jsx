@@ -42,7 +42,7 @@ export default function Chat() {
   const navSession = location.state?.session
 
   const [messages, setMessages] = useState([])
-  const [sessionInfo, setSessionInfo] = useState(navSession || null)
+  const [sessionInfo] = useState(navSession || null)
   const [status, setStatus] = useState(navSession?.status || 'open')
   const [loading, setLoading] = useState(true)
   const [closingLoading, setClosingLoading] = useState(false)
@@ -88,13 +88,31 @@ export default function Chat() {
       socket.emit('join_chat', sessionId)
     })
 
-    socket.on('new_message', (message) => {
+    // Sent to the agent (sender) only — replaces the optimistic temp entry
+    socket.on('message_sent', (message) => {
       setMessages((prev) => {
-        // Avoid duplicates
+        // Replace matching temp entry by clientMessageId, or append if not found
+        const idx = prev.findIndex(
+          (m) => m.clientMessageId && m.clientMessageId === message.clientMessageId
+        )
+        if (idx !== -1) {
+          const next = [...prev]
+          next[idx] = message
+          return next
+        }
+        // Fallback: avoid duplicates then append
         if (prev.some((m) => m._id === message._id)) return prev
         return [...prev, message]
       })
-      // Auto mark as read if message is from the user (not from us)
+    })
+
+    // Sent to everyone except the sender — incoming messages from the user
+    socket.on('new_message', (message) => {
+      setMessages((prev) => {
+        if (prev.some((m) => m._id === message._id)) return prev
+        return [...prev, message]
+      })
+      // Auto mark as read
       if (message.sender?._id !== user?._id) {
         socket.emit('mark_read', { messageId: message._id, sessionId })
       }
@@ -140,19 +158,18 @@ export default function Chat() {
     const socket = socketRef.current
     if (!socket) return
 
-    // Optimistic update
-    const tempId = `temp_${Date.now()}`
+    const clientMessageId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     const optimistic = {
-      _id: tempId,
+      _id: clientMessageId,
+      clientMessageId,
       text,
       sender: { _id: user?._id, fullName: user?.fullName, username: user?.username },
       createdAt: new Date().toISOString(),
       isRead: false,
-      isTemp: true,
     }
     setMessages((prev) => [...prev, optimistic])
 
-    socket.emit('send_message', { sessionId, text })
+    socket.emit('send_message', { sessionId, text, clientMessageId })
   }, [sessionId, user])
 
   const handleImageSelect = useCallback(async (file) => {
@@ -164,7 +181,17 @@ export default function Chat() {
       const res = await uploadImage(file)
       const imageUrl = res.data?.data?.imageUrl || res.data?.imageUrl
       if (imageUrl) {
-        socket.emit('send_message', { sessionId, imageUrl })
+        const clientMessageId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+        const optimistic = {
+          _id: clientMessageId,
+          clientMessageId,
+          imageUrl,
+          sender: { _id: user?._id, fullName: user?.fullName, username: user?.username },
+          createdAt: new Date().toISOString(),
+          isRead: false,
+        }
+        setMessages((prev) => [...prev, optimistic])
+        socket.emit('send_message', { sessionId, imageUrl, clientMessageId })
       }
     } catch {
       toast.error('Failed to upload image')

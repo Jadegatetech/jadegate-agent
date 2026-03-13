@@ -7,3 +7,11 @@ export const getAgents = () =>
 
 export const getAgentById = (id) =>
   api.get(`/api/agents/${id}`)
+
+export const updateProfilePicture = (file) => {
+  const formData = new FormData()
+  formData.append('profilePicture', file)
+  return api.put('/api/profile/picture', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
