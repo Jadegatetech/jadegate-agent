@@ -50,9 +50,11 @@ export default function Login() {
     try {
       const res = await loginRequest(email, password)
 
-      // Backend returns: { success, data: <userObject>, token, refreshToken }
+      // Backend returns: { success, data: <userObject>, token, refreshToken, sessionId }
       const user = res.data?.data
       const accessToken = res.data?.token
+      const refreshToken = res.data?.refreshToken
+      const sessionId = res.data?.sessionId
 
       if (!accessToken || !user) {
         toast.error('Unexpected response from server. Please try again.')
@@ -64,7 +66,7 @@ export default function Login() {
         return
       }
 
-      login(user, accessToken)
+      login(user, accessToken, refreshToken, sessionId)
       navigate('/sessions', { replace: true })
     } catch (err) {
       const msg =

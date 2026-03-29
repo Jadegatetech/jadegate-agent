@@ -1,5 +1,6 @@
 import { Navigate, Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import api from '../api/axios'
 
 function InboxIcon({ active }) {
   return (
@@ -35,7 +36,12 @@ export default function ProtectedLayout() {
 
   if (!token) return <Navigate to="/login" replace />
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await api.post('/api/auth/logout')
+    } catch {
+      // Even if the server call fails, proceed with local logout
+    }
     logout()
     navigate('/login', { replace: true })
   }

@@ -1,5 +1,4 @@
 import { createContext, useContext, useState, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
 
 const AuthContext = createContext(null)
 
@@ -14,9 +13,11 @@ export function AuthProvider({ children }) {
     }
   })
 
-  const login = useCallback((userData, accessToken) => {
+  const login = useCallback((userData, accessToken, refreshToken, sessionId) => {
     localStorage.setItem('agent_token', accessToken)
     localStorage.setItem('agent_user', JSON.stringify(userData))
+    if (refreshToken) localStorage.setItem('agent_refresh_token', refreshToken)
+    if (sessionId) localStorage.setItem('agent_session_id', sessionId)
     setToken(accessToken)
     setUser(userData)
   }, [])
@@ -24,6 +25,8 @@ export function AuthProvider({ children }) {
   const logout = useCallback(() => {
     localStorage.removeItem('agent_token')
     localStorage.removeItem('agent_user')
+    localStorage.removeItem('agent_refresh_token')
+    localStorage.removeItem('agent_session_id')
     setToken(null)
     setUser(null)
   }, [])
