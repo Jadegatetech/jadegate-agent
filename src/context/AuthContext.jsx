@@ -1,9 +1,11 @@
-import { createContext, useContext, useState, useCallback } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { setTokenRefreshCallback } from '../api/axios'
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem('agent_token'))
+  const [sessionId, setSessionId] = useState(() => localStorage.getItem('agent_session_id'))
   const [user, setUser] = useState(() => {
     try {
       const stored = localStorage.getItem('agent_user')
@@ -13,11 +15,14 @@ export function AuthProvider({ children }) {
     }
   })
 
-  const login = useCallback((userData, accessToken, refreshToken, sessionId) => {
+  const login = useCallback((userData, accessToken, refreshToken, newSessionId) => {
     localStorage.setItem('agent_token', accessToken)
     localStorage.setItem('agent_user', JSON.stringify(userData))
     if (refreshToken) localStorage.setItem('agent_refresh_token', refreshToken)
-    if (sessionId) localStorage.setItem('agent_session_id', sessionId)
+    if (newSessionId) {
+      localStorage.setItem('agent_session_id', newSessionId)
+      setSessionId(newSessionId)
+    }
     setToken(accessToken)
     setUser(userData)
   }, [])
@@ -29,10 +34,23 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('agent_session_id')
     setToken(null)
     setUser(null)
+    setSessionId(null)
   }, [])
 
+  // Called by axios interceptor after a silent token refresh so that any
+  // socket useEffect that depends on `token` will reconnect automatically.
+  const updateToken = useCallback((newToken) => {
+    localStorage.setItem('agent_token', newToken)
+    setToken(newToken)
+  }, [])
+
+  useEffect(() => {
+    setTokenRefreshCallback(updateToken)
+    return () => setTokenRefreshCallback(null)
+  }, [updateToken])
+
   return (
-    <AuthContext.Provider value={{ user, token, login, logout }}>
+    <AuthContext.Provider value={{ user, token, sessionId, login, logout, updateToken }}>
       {children}
     </AuthContext.Provider>
   )

@@ -15,11 +15,30 @@ function formatRelativeTime(dateStr) {
   return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
+function displayName(user) {
+  const full = [user?.firstName, user?.lastName].filter(Boolean).join(' ')
+  return full || user?.username || 'Unknown User'
+}
+
+const STATUS_BADGE = {
+  open: 'open',
+  pending: 'pending',
+  resolved: 'resolved',
+  closed: 'closed',
+}
+
+const STATUS_LABEL = {
+  open: 'Open',
+  pending: 'Pending',
+  resolved: 'Resolved',
+  closed: 'Closed',
+}
+
 export default function SessionCard({ session }) {
   const navigate = useNavigate()
   const { _id, user, topic, status, lastMessageAt, unreadCount } = session
 
-  const userName = user?.fullName || user?.username || 'Unknown User'
+  const userName = displayName(user)
   const username = user?.username ? `@${user.username}` : ''
 
   return (
@@ -53,8 +72,8 @@ export default function SessionCard({ session }) {
         </div>
       </div>
 
-      <Badge variant={status === 'open' ? 'open' : 'closed'} className="flex-shrink-0 ml-1">
-        {status === 'open' ? 'Open' : 'Closed'}
+      <Badge variant={STATUS_BADGE[status] ?? 'closed'} className="flex-shrink-0 ml-1">
+        {STATUS_LABEL[status] ?? status}
       </Badge>
     </button>
   )

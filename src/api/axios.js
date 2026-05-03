@@ -1,5 +1,9 @@
 import axios from 'axios'
 
+// AuthContext registers this so the socket can reconnect after a silent token refresh
+let tokenRefreshCallback = null
+export const setTokenRefreshCallback = (cb) => { tokenRefreshCallback = cb }
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL,
 })
@@ -22,7 +26,6 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config
 
-    // If we get a 401 and haven't already tried refreshing, attempt a token refresh
     if (
       error.response?.status === 401 &&
       !originalRequest._retry &&
@@ -40,15 +43,16 @@ api.interceptors.response.use(
         if (res.data?.success && res.data?.token) {
           const newToken = res.data.token
           localStorage.setItem('agent_token', newToken)
+          // Notify AuthContext so token state updates and socket useEffect re-fires
+          tokenRefreshCallback?.(newToken)
           originalRequest.headers.Authorization = `Bearer ${newToken}`
           return api(originalRequest)
         }
       } catch {
-        // Refresh failed — force logout
+        // Refresh failed — fall through to logout
       }
     }
 
-    // If refresh also failed or no refresh token, clear everything and redirect
     if (error.response?.status === 401) {
       localStorage.removeItem('agent_token')
       localStorage.removeItem('agent_user')

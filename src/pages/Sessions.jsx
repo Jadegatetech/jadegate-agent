@@ -1,5 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
+import { useEffect } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { io } from 'socket.io-client'
 import { getSessions } from '../api/chat'
+import { useAuth } from '../context/AuthContext'
 import SessionCard from '../components/chat/SessionCard'
 import { SkeletonSessionCard } from '../components/ui/Skeleton'
 
@@ -18,6 +21,9 @@ function EmptyState() {
 }
 
 export default function Sessions() {
+  const { token, sessionId: authSessionId } = useAuth()
+  const queryClient = useQueryClient()
+
   const { data, isLoading, isError } = useQuery({
     queryKey: ['sessions'],
     queryFn: async () => {
@@ -27,6 +33,29 @@ export default function Sessions() {
     staleTime: 30 * 1000,
     refetchInterval: 60 * 1000,
   })
+
+  // Live session list updates via socket
+  useEffect(() => {
+    if (!token) return
+
+    const socket = io(import.meta.env.VITE_API_URL, {
+      auth: { token, sessionId: authSessionId },
+      transports: ['websocket', 'polling'],
+    })
+
+    const invalidate = () =>
+      queryClient.invalidateQueries({ queryKey: ['sessions'] })
+
+    socket.on('unread_count_updated', invalidate)
+    socket.on('chat_sessions_updated', invalidate)
+    socket.on('session_status', invalidate)
+    socket.on('session_reassigned', invalidate)
+    socket.on('removed_from_session', invalidate)
+
+    return () => {
+      socket.disconnect()
+    }
+  }, [token, authSessionId, queryClient])
 
   return (
     <div className="max-w-lg mx-auto">

@@ -10,13 +10,15 @@ function CheckIcon() {
 export default function Badge({ variant = 'open', children, className = '' }) {
   const styles = {
     open: 'bg-jade-400/10 text-jade-400 border-jade-400/20',
+    pending: 'bg-amber-400/15 text-amber-400 border-amber-400/20',
+    resolved: 'bg-blue-400/15 text-blue-400 border-blue-400/20',
     closed: 'bg-jade-700/20 text-jade-700 border-jade-700/30',
     verified: 'bg-jade-400/10 text-jade-400 border-jade-400/20',
   }
 
   return (
     <span
-      className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full border ${styles[variant]} ${className}`}
+      className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full border ${styles[variant] ?? styles.closed} ${className}`}
     >
       {variant === 'verified' && <CheckIcon />}
       {children}

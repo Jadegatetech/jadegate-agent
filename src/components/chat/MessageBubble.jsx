@@ -5,8 +5,14 @@ function formatTime(dateStr) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+function displayName(user) {
+  const full = [user?.firstName, user?.lastName].filter(Boolean).join(' ')
+  return full || user?.username || 'User'
+}
+
 export default function MessageBubble({ message, isOwn }) {
-  const { text, imageUrl, sender, createdAt } = message
+  const { text, sender, createdAt } = message
+  const imageUrl = message.imageUrl || message.attachment?.url
 
   if (isOwn) {
     return (
@@ -32,13 +38,13 @@ export default function MessageBubble({ message, isOwn }) {
     <div className="flex items-end gap-2 mb-3 px-4">
       <Avatar
         src={sender?.profilePicture}
-        name={sender?.fullName || sender?.username}
+        name={displayName(sender)}
         size="sm"
         className="flex-shrink-0 mb-4"
       />
       <div className="max-w-[75%]">
         <p className="text-[11px] font-semibold text-jade-700 mb-1 ml-1">
-          {sender?.fullName || sender?.username}
+          {displayName(sender)}
         </p>
         <div className="bg-jade-800 rounded-2xl rounded-tl-sm px-4 py-2.5">
           {text && <p className="text-jade-50 text-sm leading-relaxed">{text}</p>}

@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { io } from 'socket.io-client'
 import toast from 'react-hot-toast'
-import { getMessages, closeSession, reopenSession, uploadImage } from '../api/chat'
+import { getMessages, closeSession, resolveSession, reopenSession, uploadImage } from '../api/chat'
 import { useAuth } from '../context/AuthContext'
 import MessageBubble from '../components/chat/MessageBubble'
 import ChatInput from '../components/chat/ChatInput'
@@ -10,6 +10,44 @@ import Badge from '../components/ui/Badge'
 import Avatar from '../components/ui/Avatar'
 import Button from '../components/ui/Button'
 import { SkeletonBlock } from '../components/ui/Skeleton'
+
+function displayName(user) {
+  const full = [user?.firstName, user?.lastName].filter(Boolean).join(' ')
+  return full || user?.username || user?.email || 'User'
+}
+
+const CHAT_ERROR_MESSAGES = {
+  SESSION_REQUIRED: 'Session expired. Please log in again.',
+  CLIENT_MESSAGE_ID_REQUIRED: 'Message ID missing. Please try again.',
+  SESSION_CLOSED: 'This conversation is closed and cannot receive new messages.',
+  UNAUTHORIZED_CHAT_ACCESS: 'You are not authorized to access this conversation.',
+  INVALID_ATTACHMENT_URL: 'Invalid attachment. Please upload the image again.',
+  ATTACHMENT_NOT_OWNED: 'This attachment belongs to another user.',
+  ATTACHMENT_ALREADY_USED: 'This image has already been sent.',
+  MESSAGE_NOT_FOUND: 'Message not found.',
+  RATE_LIMITED: 'Too many messages. Please slow down.',
+  CHAT_NOT_FOUND: 'Chat session not found.',
+  AUTH_REQUIRED: 'Authentication required. Please log in again.',
+  SESSION_EXPIRED: 'Your session has expired. Please log in again.',
+  INVALID_SESSION_ID: 'Invalid session. Please go back and try again.',
+  EMPTY_MESSAGE: 'Message cannot be empty.',
+}
+
+const AUTH_ERROR_CODES = ['SESSION_REQUIRED', 'AUTH_REQUIRED', 'SESSION_EXPIRED', 'INVALID_TOKEN']
+
+// open and pending allow messaging; resolved and closed do not
+const MESSAGE_ALLOWED = new Set(['open', 'pending'])
+
+// Reasons where socket.io will NOT auto-reconnect
+const NO_RECONNECT_REASONS = new Set(['io server disconnect', 'io client disconnect'])
+
+const STATUS_BADGE = { open: 'open', pending: 'pending', resolved: 'resolved', closed: 'closed' }
+const STATUS_LABEL = { open: 'Open', pending: 'Pending', resolved: 'Resolved', closed: 'Closed' }
+
+function clientId() {
+  if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
 
 function BackIcon() {
   return (
@@ -32,42 +70,69 @@ function MessageSkeleton() {
   )
 }
 
+// 'connecting' → gray   'live' → green   'reconnecting' → amber pulse   'offline' → red
+function SocketStatusChip({ status }) {
+  if (status === 'live') return null // silent when healthy
+
+  const config = {
+    connecting: { dot: 'bg-jade-700 animate-pulse', label: 'Connecting…', text: 'text-jade-700' },
+    reconnecting: { dot: 'bg-amber-400 animate-pulse', label: 'Reconnecting…', text: 'text-amber-400' },
+    offline: { dot: 'bg-red-400', label: 'Offline', text: 'text-red-400' },
+  }[status] ?? { dot: 'bg-jade-700', label: '', text: 'text-jade-700' }
+
+  return (
+    <div className={`flex items-center gap-1 mt-0.5 ${config.text}`}>
+      <span className={`size-1.5 rounded-full flex-shrink-0 ${config.dot}`} />
+      <span className="text-[10px] font-medium">{config.label}</span>
+    </div>
+  )
+}
+
 export default function Chat() {
   const { id: sessionId } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
-  const { user, token } = useAuth()
+  const { user, token, sessionId: authSessionId } = useAuth()
 
-  // Session data passed from the sessions list via navigation state
   const navSession = location.state?.session
 
   const [messages, setMessages] = useState([])
-  const [sessionInfo] = useState(navSession || null)
   const [status, setStatus] = useState(navSession?.status || 'open')
   const [loading, setLoading] = useState(true)
-  const [closingLoading, setClosingLoading] = useState(false)
+  const [actionLoading, setActionLoading] = useState(null) // 'close' | 'resolve' | 'reopen' | null
   const [uploadingImage, setUploadingImage] = useState(false)
+  const [joined, setJoined] = useState(false)
+  const [socketStatus, setSocketStatus] = useState('connecting') // 'connecting'|'live'|'reconnecting'|'offline'
+  const [nextCursor, setNextCursor] = useState(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
 
   const socketRef = useRef(null)
   const bottomRef = useRef(null)
+  const messagesContainerRef = useRef(null)
+  const prevScrollHeightRef = useRef(null)
 
   const scrollToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [])
 
-  // Load messages
+  // Load initial messages
   useEffect(() => {
     let cancelled = false
     setLoading(true)
 
-    getMessages(sessionId)
+    getMessages(sessionId, { limit: 20 })
       .then((res) => {
         if (cancelled) return
-        const data = res.data?.data || res.data?.messages || res.data || []
-        setMessages(Array.isArray(data) ? data : [])
+        const msgs = res.data?.messages || res.data?.data || []
+        setMessages(Array.isArray(msgs) ? msgs : [])
+        setNextCursor(res.data?.nextCursor ?? null)
+        setHasMore(res.data?.hasMore ?? false)
       })
-      .catch(() => {
-        if (!cancelled) toast.error('Failed to load messages')
+      .catch((err) => {
+        if (cancelled) return
+        const msg = err.response?.data?.message || 'Failed to load messages'
+        toast.error(msg)
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -76,22 +141,53 @@ export default function Chat() {
     return () => { cancelled = true }
   }, [sessionId])
 
-  // Socket connection
+  // Socket connection — re-fires when token changes (e.g. after silent refresh)
   useEffect(() => {
+    if (!token) return
+
+    setSocketStatus('connecting')
+
     const socket = io(import.meta.env.VITE_API_URL, {
-      auth: { token },
+      auth: { token, sessionId: authSessionId },
       transports: ['websocket', 'polling'],
     })
     socketRef.current = socket
 
+    // ── Manager-level reconnect events ──────────────────────────────────────
+    const onReconnectAttempt = () => setSocketStatus('reconnecting')
+    const onReconnectFailed = () => setSocketStatus('offline')
+    socket.io.on('reconnect_attempt', onReconnectAttempt)
+    socket.io.on('reconnect_failed', onReconnectFailed)
+
+    // ── Socket events ────────────────────────────────────────────────────────
     socket.on('connect', () => {
-      socket.emit('join_chat', sessionId)
+      setSocketStatus('live')
+      socket.emit('join_chat', { sessionId })
     })
 
-    // Sent to the agent (sender) only — replaces the optimistic temp entry
+    socket.on('disconnect', (reason) => {
+      setJoined(false)
+      setSocketStatus(NO_RECONNECT_REASONS.has(reason) ? 'offline' : 'reconnecting')
+    })
+
+    socket.on('connect_error', (err) => {
+      const code = err?.data?.code
+      if (AUTH_ERROR_CODES.includes(code)) {
+        toast.error('Connection failed. Please log in again.')
+        navigate('/login', { replace: true })
+      } else {
+        setSocketStatus('reconnecting')
+      }
+    })
+
+    socket.on('chat_joined', ({ sessionId: joinedId }) => {
+      if (joinedId?.toString() === sessionId?.toString()) {
+        setJoined(true)
+      }
+    })
+
     socket.on('message_sent', (message) => {
       setMessages((prev) => {
-        // Replace matching temp entry by clientMessageId, or append if not found
         const idx = prev.findIndex(
           (m) => m.clientMessageId && m.clientMessageId === message.clientMessageId
         )
@@ -100,19 +196,18 @@ export default function Chat() {
           next[idx] = message
           return next
         }
-        // Fallback: avoid duplicates then append
         if (prev.some((m) => m._id === message._id)) return prev
         return [...prev, message]
       })
+      scrollToBottom()
     })
 
-    // Sent to everyone except the sender — incoming messages from the user
     socket.on('new_message', (message) => {
       setMessages((prev) => {
         if (prev.some((m) => m._id === message._id)) return prev
         return [...prev, message]
       })
-      // Auto mark as read
+      scrollToBottom()
       if (message.sender?._id !== user?._id) {
         socket.emit('mark_read', { messageId: message._id, sessionId })
       }
@@ -128,100 +223,197 @@ export default function Chat() {
       setStatus(newStatus)
     })
 
+    socket.on('session_reassigned', (payload) => {
+      if (payload.sessionId?.toString() !== sessionId?.toString()) return
+
+      const meId = user?._id?.toString()
+      // payload.agent is the new agent ID (string) set by the backend
+      const newAgent = payload.agent?.toString?.() ?? payload.newAgent?.toString?.()
+
+      // Only redirect if we know for sure we are no longer the agent
+      if (meId && newAgent && meId !== newAgent) {
+        toast.error('This chat has been reassigned to another agent.')
+        navigate('/sessions', { replace: true })
+      }
+    })
+
+    socket.on('removed_from_session', ({ sessionId: removedId }) => {
+      // Backend sends ObjectId — compare as strings
+      if (removedId?.toString() === sessionId?.toString()) {
+        toast.error('This chat has been reassigned. You no longer have access.')
+        navigate('/sessions', { replace: true })
+      }
+    })
+
+    socket.on('chat_error', ({ code, message: errMsg }) => {
+      const msg = CHAT_ERROR_MESSAGES[code] || errMsg || 'Chat error. Please try again.'
+      toast.error(msg)
+      if (AUTH_ERROR_CODES.includes(code)) {
+        navigate('/login', { replace: true })
+      }
+    })
+
     socket.on('error', (err) => {
       const msg = typeof err === 'string' ? err : err?.message || 'Socket error'
-      if (msg.toLowerCase().includes('rate')) {
-        toast.error('Slow down — too many messages. Try again in a moment.')
+      const code = typeof err === 'object' ? err?.code : null
+      if (AUTH_ERROR_CODES.includes(code)) {
+        toast.error('Connection error. Please log in again.')
+        navigate('/login', { replace: true })
+      } else if (CHAT_ERROR_MESSAGES[code]) {
+        toast.error(CHAT_ERROR_MESSAGES[code])
+      } else if (msg.toLowerCase().includes('rate')) {
+        toast.error('Too many messages. Please slow down.')
       } else {
         toast.error(msg)
       }
     })
 
     return () => {
+      setJoined(false)
+      setSocketStatus('connecting')
+      socket.io.off('reconnect_attempt', onReconnectAttempt)
+      socket.io.off('reconnect_failed', onReconnectFailed)
       socket.disconnect()
     }
-  }, [sessionId, token, user?._id])
+  }, [sessionId, token, authSessionId, user?._id, navigate, scrollToBottom])
 
-  // Scroll to bottom after messages load
+  // Scroll to bottom once initial load finishes
   useEffect(() => {
-    if (!loading) {
-      setTimeout(scrollToBottom, 100)
-    }
+    if (!loading) setTimeout(scrollToBottom, 100)
   }, [loading, scrollToBottom])
 
-  // Scroll to bottom on new message
-  useEffect(() => {
-    scrollToBottom()
-  }, [messages.length, scrollToBottom])
+  // Restore scroll after loading earlier messages (runs synchronously after DOM paint)
+  useLayoutEffect(() => {
+    if (prevScrollHeightRef.current && messagesContainerRef.current) {
+      const el = messagesContainerRef.current
+      el.scrollTop = el.scrollHeight - prevScrollHeightRef.current
+      prevScrollHeightRef.current = null
+    }
+  })
 
   const handleSend = useCallback((text) => {
     const socket = socketRef.current
-    if (!socket) return
+    if (!socket || !joined) return
 
-    const clientMessageId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const id = clientId()
     const optimistic = {
-      _id: clientMessageId,
-      clientMessageId,
+      _id: id,
+      clientMessageId: id,
       text,
-      sender: { _id: user?._id, fullName: user?.fullName, username: user?.username },
+      sender: {
+        _id: user?._id,
+        firstName: user?.firstName,
+        lastName: user?.lastName,
+        username: user?.username,
+      },
       createdAt: new Date().toISOString(),
       isRead: false,
     }
     setMessages((prev) => [...prev, optimistic])
-
-    socket.emit('send_message', { sessionId, text, clientMessageId })
-  }, [sessionId, user])
+    socket.emit('send_message', { sessionId, text, clientMessageId: id })
+    scrollToBottom()
+  }, [sessionId, user, joined, scrollToBottom])
 
   const handleImageSelect = useCallback(async (file) => {
     const socket = socketRef.current
-    if (!socket || uploadingImage) return
+    if (!socket || !joined || uploadingImage) return
 
     setUploadingImage(true)
     try {
       const res = await uploadImage(file)
-      const imageUrl = res.data?.data?.imageUrl || res.data?.imageUrl
-      if (imageUrl) {
-        const clientMessageId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-        const optimistic = {
-          _id: clientMessageId,
-          clientMessageId,
-          imageUrl,
-          sender: { _id: user?._id, fullName: user?.fullName, username: user?.username },
-          createdAt: new Date().toISOString(),
-          isRead: false,
-        }
-        setMessages((prev) => [...prev, optimistic])
-        socket.emit('send_message', { sessionId, imageUrl, clientMessageId })
+      const data = res.data?.data || res.data || {}
+      const { imageUrl, publicId, attachmentId } = data
+
+      if (!imageUrl) {
+        toast.error('Image upload failed. Please try again.')
+        return
       }
-    } catch {
-      toast.error('Failed to upload image')
+
+      const id = clientId()
+      const optimistic = {
+        _id: id,
+        clientMessageId: id,
+        imageUrl,
+        sender: {
+          _id: user?._id,
+          firstName: user?.firstName,
+          lastName: user?.lastName,
+          username: user?.username,
+        },
+        createdAt: new Date().toISOString(),
+        isRead: false,
+      }
+      setMessages((prev) => [...prev, optimistic])
+      socket.emit('send_message', { sessionId, imageUrl, publicId, attachmentId, clientMessageId: id })
+      scrollToBottom()
+    } catch (err) {
+      const msg = err.response?.data?.message || 'Failed to upload image'
+      toast.error(msg)
     } finally {
       setUploadingImage(false)
     }
-  }, [sessionId, uploadingImage])
+  }, [sessionId, user, joined, uploadingImage, scrollToBottom])
 
-  const handleToggleStatus = async () => {
-    setClosingLoading(true)
+  const handleLoadEarlier = async () => {
+    if (!hasMore || loadingMore || !nextCursor) return
+
+    if (messagesContainerRef.current) {
+      prevScrollHeightRef.current = messagesContainerRef.current.scrollHeight
+    }
+    setLoadingMore(true)
+
     try {
-      if (status === 'open') {
+      const res = await getMessages(sessionId, { limit: 20, before: nextCursor })
+      const older = res.data?.messages || res.data?.data || []
+      setMessages((prev) => [
+        ...older.filter((m) => !prev.some((p) => p._id === m._id)),
+        ...prev,
+      ])
+      setNextCursor(res.data?.nextCursor ?? null)
+      setHasMore(res.data?.hasMore ?? false)
+    } catch {
+      toast.error('Failed to load earlier messages')
+      prevScrollHeightRef.current = null
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  const handleAction = async (action) => {
+    if (actionLoading) return
+    setActionLoading(action)
+    try {
+      if (action === 'close') {
         await closeSession(sessionId)
         setStatus('closed')
         toast.success('Session closed')
-      } else {
+      } else if (action === 'resolve') {
+        await resolveSession(sessionId)
+        setStatus('resolved')
+        toast.success('Session resolved')
+      } else if (action === 'reopen') {
         await reopenSession(sessionId)
         setStatus('open')
         toast.success('Session reopened')
       }
-    } catch {
-      toast.error('Failed to update session status')
+    } catch (err) {
+      const msg =
+        err.response?.data?.message ||
+        err.response?.data?.code ||
+        `Failed to ${action} session`
+      toast.error(msg)
     } finally {
-      setClosingLoading(false)
+      setActionLoading(null)
     }
   }
 
-  // Prefer session info from navigation state (has profilePicture), fall back to message sender
-  const sessionUser = sessionInfo?.user || messages.find((m) => m.sender?._id !== user?._id)?.sender
-  const sessionUserName = sessionUser?.fullName || sessionUser?.username || 'User'
+  const sessionUser =
+    navSession?.user ||
+    messages.find((m) => m.sender?._id !== user?._id)?.sender
+  const sessionUserName = displayName(sessionUser)
+
+  const canSend = MESSAGE_ALLOWED.has(status) && joined && !uploadingImage
+  const isClosed = !MESSAGE_ALLOWED.has(status)
 
   return (
     <div className="flex flex-col h-screen h-dvh">
@@ -245,25 +437,66 @@ export default function Chat() {
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <h2 className="font-semibold text-jade-50 text-sm truncate">{sessionUserName}</h2>
-              <Badge variant={status === 'open' ? 'open' : 'closed'} className="flex-shrink-0">
-                {status === 'open' ? 'Open' : 'Closed'}
+              <Badge variant={STATUS_BADGE[status] ?? 'closed'} className="flex-shrink-0">
+                {STATUS_LABEL[status] ?? status}
               </Badge>
             </div>
+            <SocketStatusChip status={socketStatus} />
           </div>
 
-          <Button
-            variant={status === 'open' ? 'danger' : 'ghost'}
-            loading={closingLoading}
-            onClick={handleToggleStatus}
-            className="flex-shrink-0 text-xs px-3 py-1.5"
-          >
-            {status === 'open' ? 'Close' : 'Reopen'}
-          </Button>
+          {/* Action buttons */}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {MESSAGE_ALLOWED.has(status) ? (
+              <>
+                <Button
+                  variant="ghost"
+                  loading={actionLoading === 'resolve'}
+                  disabled={!!actionLoading}
+                  onClick={() => handleAction('resolve')}
+                  className="text-xs px-3 py-1.5"
+                >
+                  Resolve
+                </Button>
+                <Button
+                  variant="danger"
+                  loading={actionLoading === 'close'}
+                  disabled={!!actionLoading}
+                  onClick={() => handleAction('close')}
+                  className="text-xs px-3 py-1.5"
+                >
+                  Close
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="ghost"
+                loading={actionLoading === 'reopen'}
+                disabled={!!actionLoading}
+                onClick={() => handleAction('reopen')}
+                className="text-xs px-3 py-1.5"
+              >
+                Reopen
+              </Button>
+            )}
+          </div>
         </div>
       </header>
 
       {/* Messages area */}
-      <main className="flex-1 overflow-y-auto py-4">
+      <main ref={messagesContainerRef} className="flex-1 overflow-y-auto py-4">
+        {/* Load earlier button */}
+        {!loading && hasMore && (
+          <div className="flex justify-center px-4 pb-3">
+            <button
+              onClick={handleLoadEarlier}
+              disabled={loadingMore}
+              className="text-xs text-jade-400 hover:text-jade-400/80 disabled:opacity-50 transition-colors"
+            >
+              {loadingMore ? 'Loading earlier messages…' : 'Load earlier messages'}
+            </button>
+          </div>
+        )}
+
         {loading ? (
           <MessageSkeleton />
         ) : messages.length === 0 ? (
@@ -284,11 +517,28 @@ export default function Chat() {
         )}
       </main>
 
+      {/* Closed / resolved banner */}
+      {isClosed && (
+        <div className="flex-shrink-0 px-4 py-2.5 bg-jade-800/60 border-t border-jade-700/20 text-center">
+          <p className="text-sm text-jade-warm/60">
+            This conversation is{' '}
+            <span className="font-semibold text-jade-warm/80">{status}</span>.{' '}
+            <button
+              onClick={() => handleAction('reopen')}
+              disabled={!!actionLoading}
+              className="text-jade-400 underline underline-offset-2 hover:text-jade-400/80 transition-colors disabled:opacity-50"
+            >
+              {actionLoading === 'reopen' ? 'Reopening…' : 'Reopen'}
+            </button>
+          </p>
+        </div>
+      )}
+
       {/* Input */}
       <ChatInput
         onSend={handleSend}
         onImageSelect={handleImageSelect}
-        disabled={status === 'closed' || uploadingImage}
+        disabled={!canSend}
       />
     </div>
   )
