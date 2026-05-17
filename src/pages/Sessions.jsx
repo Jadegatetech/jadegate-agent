@@ -2,9 +2,11 @@ import { useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { io } from 'socket.io-client'
 import { getSessions } from '../api/chat'
-import { useAuth } from '../context/AuthContext'
+import { isServiceUnavailableError, SERVICE_UNAVAILABLE_MESSAGE } from '../api/axios'
+import { useAuth } from '../context/useAuth'
 import SessionCard from '../components/chat/SessionCard'
 import { SkeletonSessionCard } from '../components/ui/Skeleton'
+import Button from '../components/ui/Button'
 
 function EmptyState() {
   return (
@@ -24,7 +26,7 @@ export default function Sessions() {
   const { token, sessionId: authSessionId } = useAuth()
   const queryClient = useQueryClient()
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, error, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ['sessions'],
     queryFn: async () => {
       const res = await getSessions(1, 20)
@@ -57,6 +59,8 @@ export default function Sessions() {
     }
   }, [token, authSessionId, queryClient])
 
+  const serviceUnavailable = isServiceUnavailableError(error)
+
   return (
     <div className="max-w-lg mx-auto">
       {/* Header */}
@@ -78,8 +82,20 @@ export default function Sessions() {
       )}
 
       {isError && (
-        <div className="flex items-center justify-center py-16">
-          <p className="text-jade-warm/60 text-sm">Failed to load sessions</p>
+        <div className="flex flex-col items-center justify-center gap-3 py-16 px-4 text-center">
+          <p className="text-jade-warm/60 text-sm">
+            {serviceUnavailable ? SERVICE_UNAVAILABLE_MESSAGE : 'Failed to load sessions'}
+          </p>
+          {serviceUnavailable && (
+            <Button
+              variant="ghost"
+              loading={isFetching}
+              onClick={() => refetch()}
+              className="text-xs"
+            >
+              Retry
+            </Button>
+          )}
         </div>
       )}
 

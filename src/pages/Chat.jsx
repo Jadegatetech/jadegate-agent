@@ -3,7 +3,8 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { io } from 'socket.io-client'
 import toast from 'react-hot-toast'
 import { getMessages, closeSession, resolveSession, reopenSession, uploadImage } from '../api/chat'
-import { useAuth } from '../context/AuthContext'
+import { isServiceUnavailableError, SERVICE_UNAVAILABLE_MESSAGE } from '../api/axios'
+import { useAuth } from '../context/useAuth'
 import MessageBubble from '../components/chat/MessageBubble'
 import ChatInput from '../components/chat/ChatInput'
 import Badge from '../components/ui/Badge'
@@ -106,6 +107,8 @@ export default function Chat() {
   const [nextCursor, setNextCursor] = useState(null)
   const [hasMore, setHasMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [loadError, setLoadError] = useState(null)
+  const [retryIndex, setRetryIndex] = useState(0)
 
   const socketRef = useRef(null)
   const bottomRef = useRef(null)
@@ -120,6 +123,7 @@ export default function Chat() {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
+    setLoadError(null)
 
     getMessages(sessionId, { limit: 20 })
       .then((res) => {
@@ -131,7 +135,11 @@ export default function Chat() {
       })
       .catch((err) => {
         if (cancelled) return
-        const msg = err.response?.data?.message || 'Failed to load messages'
+        const serviceUnavailable = isServiceUnavailableError(err)
+        const msg = serviceUnavailable
+          ? SERVICE_UNAVAILABLE_MESSAGE
+          : err.response?.data?.message || 'Failed to load messages'
+        setLoadError({ serviceUnavailable, message: msg })
         toast.error(msg)
       })
       .finally(() => {
@@ -139,7 +147,7 @@ export default function Chat() {
       })
 
     return () => { cancelled = true }
-  }, [sessionId])
+  }, [sessionId, retryIndex])
 
   // Socket connection — re-fires when token changes (e.g. after silent refresh)
   useEffect(() => {
@@ -347,7 +355,9 @@ export default function Chat() {
       socket.emit('send_message', { sessionId, imageUrl, publicId, attachmentId, clientMessageId: id })
       scrollToBottom()
     } catch (err) {
-      const msg = err.response?.data?.message || 'Failed to upload image'
+      const msg = isServiceUnavailableError(err)
+        ? SERVICE_UNAVAILABLE_MESSAGE
+        : err.response?.data?.message || 'Failed to upload image'
       toast.error(msg)
     } finally {
       setUploadingImage(false)
@@ -371,8 +381,8 @@ export default function Chat() {
       ])
       setNextCursor(res.data?.nextCursor ?? null)
       setHasMore(res.data?.hasMore ?? false)
-    } catch {
-      toast.error('Failed to load earlier messages')
+    } catch (err) {
+      toast.error(isServiceUnavailableError(err) ? SERVICE_UNAVAILABLE_MESSAGE : 'Failed to load earlier messages')
       prevScrollHeightRef.current = null
     } finally {
       setLoadingMore(false)
@@ -398,6 +408,7 @@ export default function Chat() {
       }
     } catch (err) {
       const msg =
+        (isServiceUnavailableError(err) && SERVICE_UNAVAILABLE_MESSAGE) ||
         err.response?.data?.message ||
         err.response?.data?.code ||
         `Failed to ${action} session`
@@ -499,6 +510,19 @@ export default function Chat() {
 
         {loading ? (
           <MessageSkeleton />
+        ) : loadError ? (
+          <div className="flex flex-col items-center justify-center gap-3 h-full px-4 text-center">
+            <p className="text-jade-warm/60 text-sm">{loadError.message}</p>
+            {loadError.serviceUnavailable && (
+              <Button
+                variant="ghost"
+                onClick={() => setRetryIndex((value) => value + 1)}
+                className="text-xs"
+              >
+                Retry
+              </Button>
+            )}
+          </div>
         ) : messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <p className="text-jade-warm/40 text-sm">No messages yet. Start the conversation!</p>

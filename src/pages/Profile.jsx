@@ -2,10 +2,12 @@ import { useState, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { getAgents, updateProfilePicture } from '../api/agents'
-import { useAuth } from '../context/AuthContext'
+import { isServiceUnavailableError, SERVICE_UNAVAILABLE_MESSAGE } from '../api/axios'
+import { useAuth } from '../context/useAuth'
 import Avatar from '../components/ui/Avatar'
 import Badge from '../components/ui/Badge'
 import { SkeletonBlock } from '../components/ui/Skeleton'
+import Button from '../components/ui/Button'
 
 function CameraIcon() {
   return (
@@ -88,7 +90,7 @@ export default function Profile() {
   const [uploading, setUploading] = useState(false)
   const [localPicture, setLocalPicture] = useState(null)
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, error, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ['agent-profile', user?._id],
     queryFn: async () => {
       const res = await getAgents()
@@ -99,12 +101,26 @@ export default function Profile() {
     staleTime: 5 * 60 * 1000,
   })
 
+  const serviceUnavailable = isServiceUnavailableError(error)
+
   if (isLoading) return <ProfileSkeleton />
 
   if (isError) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <p className="text-jade-warm/60 text-sm">Failed to load profile</p>
+      <div className="flex flex-col items-center justify-center gap-3 h-64 px-4 text-center">
+        <p className="text-jade-warm/60 text-sm">
+          {serviceUnavailable ? SERVICE_UNAVAILABLE_MESSAGE : 'Failed to load profile'}
+        </p>
+        {serviceUnavailable && (
+          <Button
+            variant="ghost"
+            loading={isFetching}
+            onClick={() => refetch()}
+            className="text-xs"
+          >
+            Retry
+          </Button>
+        )}
       </div>
     )
   }
@@ -118,8 +134,8 @@ export default function Profile() {
       const newUrl = res.data?.data?.profilePicture
       if (newUrl) setLocalPicture(newUrl)
       toast.success('Profile picture updated')
-    } catch {
-      toast.error('Failed to update profile picture')
+    } catch (err) {
+      toast.error(isServiceUnavailableError(err) ? SERVICE_UNAVAILABLE_MESSAGE : 'Failed to update profile picture')
     } finally {
       setUploading(false)
       e.target.value = ''

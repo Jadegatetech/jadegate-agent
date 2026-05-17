@@ -1,7 +1,6 @@
-import { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { setTokenRefreshCallback } from '../api/axios'
-
-const AuthContext = createContext(null)
+import AuthContext from './auth-context'
 
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem('agent_token'))
@@ -37,27 +36,30 @@ export function AuthProvider({ children }) {
     setSessionId(null)
   }, [])
 
-  // Called by axios interceptor after a silent token refresh so that any
-  // socket useEffect that depends on `token` will reconnect automatically.
-  const updateToken = useCallback((newToken) => {
-    localStorage.setItem('agent_token', newToken)
-    setToken(newToken)
+  // Called by axios interceptor after a silent token refresh so sockets
+  // reconnect with the latest access token and session state.
+  const updateAuthSession = useCallback(({ token: newToken, refreshToken, sessionId: newSessionId }) => {
+    if (newToken) {
+      localStorage.setItem('agent_token', newToken)
+      setToken(newToken)
+    }
+    if (refreshToken) {
+      localStorage.setItem('agent_refresh_token', refreshToken)
+    }
+    if (newSessionId) {
+      localStorage.setItem('agent_session_id', newSessionId)
+      setSessionId(newSessionId)
+    }
   }, [])
 
   useEffect(() => {
-    setTokenRefreshCallback(updateToken)
+    setTokenRefreshCallback(updateAuthSession)
     return () => setTokenRefreshCallback(null)
-  }, [updateToken])
+  }, [updateAuthSession])
 
   return (
-    <AuthContext.Provider value={{ user, token, sessionId, login, logout, updateToken }}>
+    <AuthContext.Provider value={{ user, token, sessionId, login, logout, updateAuthSession }}>
       {children}
     </AuthContext.Provider>
   )
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
-  return ctx
 }
